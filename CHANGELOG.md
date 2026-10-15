@@ -1,5 +1,14 @@
 # Changelog
 
+## ExpressATT development port (unreleased)
+
+* Target the Samsung Galaxy Express SGH-I437 (MSM8960) with Linux 7.2.9,
+  nerves_system_br 1.35.0 and the armv7 Nerves toolchain 15.3.0.
+* Add board kernel patches, a nested USERDATA A/B layout, initramfs device
+  mappings and native fwup upgrade, validation and revert operations.
+* Keep device-specific WCNSS firmware and calibration local; publish source only.
+* Retain the original BeagleBone system changelog below as template provenance.
+
 This project does NOT follow semantic versioning. The version increases as
 follows:
 

@@ -1,0 +1,297 @@
+From d46f7f075e89163cfa67ea1c7d0a1ed396279492 Mon Sep 17 00:00:00 2001
+From: Marc Lainez <marc.lainez@gmail.com>
+Date: Wed, 14 Oct 2026 08:17:32 +0200
+Subject: [PATCH] ARM: qcom: Restore the Express secondary CPU fixed clock
+
+The Express bootloader leaves CPU1 on PXO with its HFPLL disabled. Selecting the AUX provider alone does not change the MSM8960 secondary mux, leaving CPU1 about thirty times slower in a pinned compute test.
+
+For this board and a fixed-clock configuration, retain the CCF PLL8 and AUX votes, select PLL8 through KPSS_XCC, and apply the downstream CPU1-only secondary mux sequence with its ordering barriers. Check the inherited SAW request and CPU state before acting; reject unsupported states and preserve votes on uncertain rollback. Use the shared Krait indirect accessor, and defer probe until providers exist.
+
+CPU0, L2, HFPLL programming and voltage controls are unchanged. CPU hotplug, idle, suspend and frequency transitions require a separate supported lifecycle and are excluded.
+
+Signed-off-by: Marc Lainez <marc.lainez@gmail.com>
+---
+ arch/arm/mach-qcom/Kconfig           |  14 ++
+ arch/arm/mach-qcom/Makefile          |   1 +
+ arch/arm/mach-qcom/expressatt-cpu1.c | 238 +++++++++++++++++++++++++++
+ 3 files changed, 253 insertions(+)
+ create mode 100644 arch/arm/mach-qcom/expressatt-cpu1.c
+
+diff --git a/arch/arm/mach-qcom/Kconfig b/arch/arm/mach-qcom/Kconfig
+index f4765be1b..f4da153f2 100644
+--- a/arch/arm/mach-qcom/Kconfig
++++ b/arch/arm/mach-qcom/Kconfig
+@@ -21,4 +21,18 @@ config ARCH_QCOM_RESERVE_SMEM
+ 	  Reserve 2MB at the beginning of the System RAM for shared mem.
+ 	  This is required on IPQ40xx, MSM8x60 and MSM8960 platforms.
+ 
++config EXPRESSATT_CPU1_CLOCK
++	bool "Restore Samsung Express CPU1 fixed PLL8 clock"
++	depends on SMP && KPSS_XCC=y
++	depends on !CPU_FREQ && !CPU_IDLE && !HOTPLUG_CPU && !SUSPEND
++	depends on !KRAITCC
++	select KRAIT_L2_ACCESSORS
++	default y
++	help
++	  Restore the fixed 384 MHz secondary CPU clock on Samsung Express
++	  when its bootloader leaves CPU1 running from PXO. Other boards are
++	  unchanged. This bounded handoff requires the stock SAW voltage
++	  request and disabled CPU1 HFPLL, and retains clock votes until
++	  reboot. CPU power/frequency transitions are not supported.
++
+ endif
+diff --git a/arch/arm/mach-qcom/Makefile b/arch/arm/mach-qcom/Makefile
+index b839201c9..256c6d91c 100644
+--- a/arch/arm/mach-qcom/Makefile
++++ b/arch/arm/mach-qcom/Makefile
+@@ -1,2 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_SMP)	+= platsmp.o
++obj-$(CONFIG_EXPRESSATT_CPU1_CLOCK) += expressatt-cpu1.o
+diff --git a/arch/arm/mach-qcom/expressatt-cpu1.c b/arch/arm/mach-qcom/expressatt-cpu1.c
+new file mode 100644
+index 000000000..416783bcd
+--- /dev/null
++++ b/arch/arm/mach-qcom/expressatt-cpu1.c
+@@ -0,0 +1,238 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Restore the stock MSM8960 secondary CPU's fixed PLL8 clock handoff. */
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/platform_device.h>
++#include <linux/smp.h>
++
++#include <asm/barrier.h>
++#include <asm/cp15.h>
++#include <asm/cputype.h>
++#include <asm/krait-l2-accessors.h>
++
++#define CPU1_MUX	0x5501
++#define CPU1_ACC	0x02098000
++#define CPU1_SAW	0x02099000
++#define CPU1_HFPLL	0x00903300
++#define PLL8_RATE	384000000
++#define PXO_RATE	27000000
++
++struct expressatt_core {
++	u32 mux;
++	u32 after;
++	bool apply;
++	int result;
++};
++
++static void expressatt_write_mux(u32 value)
++{
++	/* The downstream MSM8960 accessor orders stores before the selector. */
++	mb();
++	krait_set_l2_indirect_reg(CPU1_MUX, value);
++}
++
++static void expressatt_select_secondary(u32 initial, unsigned int selection)
++{
++	u32 value = initial | BIT(4);
++
++	expressatt_write_mux(value);
++	value = (value & ~GENMASK(3, 2)) | (selection << 2);
++	expressatt_write_mux(value);
++	value &= ~BIT(4);
++	expressatt_write_mux(value);
++	/* Complete the mux switch before the vendor settling delay. */
++	mb();
++	udelay(1);
++}
++
++static void expressatt_cpu1(void *argument)
++{
++	struct expressatt_core *core = argument;
++	unsigned long flags;
++
++	core->result = -EINVAL;
++	if (smp_processor_id() != 1 ||
++	    (read_cpuid_id() & 0xff0ffc00) != 0x510f0400 ||
++	    (get_cr() & 0x1005) != 0x1005)
++		return;
++
++	local_irq_save(flags);
++	core->mux = krait_get_l2_indirect_reg(CPU1_MUX);
++	core->after = core->mux;
++	if (core->mux)
++		goto out;
++	core->result = 0;
++	if (!core->apply)
++		goto out;
++
++	/* No primary, upper/LPL, HFPLL or other CPU clock fields change. */
++	expressatt_select_secondary(core->mux, 2);
++	core->after = krait_get_l2_indirect_reg(CPU1_MUX);
++	if (core->after != 8) {
++		expressatt_select_secondary(core->mux, 0);
++		core->after = krait_get_l2_indirect_reg(CPU1_MUX);
++		core->result = -EIO;
++	}
++out:
++	local_irq_restore(flags);
++}
++
++static int expressatt_cpu1_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *cpu, *acc = NULL, *saw = NULL;
++	struct of_phandle_args spec = { .args_count = 0 };
++	struct expressatt_core core = {};
++	struct clk *aux_clk = NULL, *pll_clk = NULL, *old_parent;
++	void __iomem *aux = NULL, *vctl = NULL, *hfpll = NULL;
++	struct resource resource;
++	int ret;
++
++	if (!of_machine_is_compatible("samsung,expressatt"))
++		return -ENODEV;
++	cpu = of_get_cpu_node(1, NULL);
++	if (!cpu)
++		return -ENODEV;
++	acc = of_parse_phandle(cpu, "qcom,acc", 0);
++	saw = of_parse_phandle(cpu, "qcom,saw", 0);
++	ret = -EINVAL;
++	if (!acc || !saw || of_address_to_resource(acc, 0, &resource) ||
++	    resource.start != CPU1_ACC || resource_size(&resource) < 0x18)
++		goto nodes;
++	if (of_address_to_resource(saw, 0, &resource) ||
++	    resource.start != CPU1_SAW || resource_size(&resource) < 0x18)
++		goto nodes;
++
++	ret = smp_call_function_single(1, expressatt_cpu1, &core, 1);
++	if (!ret)
++		ret = core.result;
++	if (ret)
++		goto nodes;
++
++	aux = ioremap(CPU1_ACC + 0x14, 4);
++	vctl = ioremap(CPU1_SAW + 0x14, 4);
++	hfpll = ioremap(CPU1_HFPLL, 4);
++	ret = -ENOMEM;
++	if (!aux || !vctl || !hfpll)
++		goto maps;
++	ret = -EINVAL;
++	/* A4 is the existing SAW request, not a voltage change by this driver. */
++	if (readl(aux) || (readl(vctl) & 0xff) != 0xa4 || (readl(hfpll) & 7))
++		goto maps;
++
++	spec.np = acc;
++	aux_clk = of_clk_get_from_provider(&spec);
++	if (IS_ERR(aux_clk)) {
++		ret = PTR_ERR(aux_clk);
++		aux_clk = NULL;
++		goto maps;
++	}
++	pll_clk = of_clk_get_by_name(acc, "pll8_vote");
++	if (IS_ERR(pll_clk)) {
++		ret = PTR_ERR(pll_clk);
++		pll_clk = NULL;
++		goto clocks;
++	}
++	old_parent = clk_get_parent(aux_clk);
++	ret = -EINVAL;
++	if (!old_parent || clk_get_rate(aux_clk) != PXO_RATE ||
++	    clk_get_rate(pll_clk) != PLL8_RATE)
++		goto clocks;
++	ret = clk_prepare_enable(pll_clk);
++	if (ret)
++		goto clocks;
++	ret = clk_prepare_enable(aux_clk);
++	if (ret)
++		goto disable_pll;
++	ret = clk_set_parent(aux_clk, pll_clk);
++	if (ret)
++		goto restore_parent;
++	if (readl(aux) != 3 || clk_get_rate(aux_clk) != PLL8_RATE) {
++		ret = -EIO;
++		goto restore_parent;
++	}
++
++	/* Recheck the fixed rail/PLL prerequisites immediately before the IPI. */
++	if ((readl(vctl) & 0xff) != 0xa4 || (readl(hfpll) & 7)) {
++		ret = -EINVAL;
++		goto restore_parent;
++	}
++	core.apply = true;
++	core.after = ~0U;
++	ret = smp_call_function_single(1, expressatt_cpu1, &core, 1);
++	if (!ret)
++		ret = core.result;
++	if (ret) {
++		/* An unobserved or failed rollback must never gate CPU1's parent. */
++		if (core.after)
++			goto retain;
++		goto restore_parent;
++	}
++	dev_info(dev, "CPU1 secondary=2 mux=00000008 AUX=00000003 PLL8=384MHz; votes retained\n");
++	goto held;
++
++restore_parent:
++	if (clk_set_parent(aux_clk, old_parent) || readl(aux) ||
++	    clk_get_rate(aux_clk) != PXO_RATE)
++		goto retain;
++	clk_disable_unprepare(aux_clk);
++disable_pll:
++	clk_disable_unprepare(pll_clk);
++clocks:
++	if (pll_clk)
++		clk_put(pll_clk);
++	if (aux_clk)
++		clk_put(aux_clk);
++	goto maps;
++retain:
++	dev_err(dev, "handoff failed (%d); uncertain rollback, retaining clock votes until reboot\n",
++		ret);
++held:
++	/* Built-in, no unbind/remove: these references last until reboot. */
++	ret = 0;
++maps:
++	if (hfpll)
++		iounmap(hfpll);
++	if (vctl)
++		iounmap(vctl);
++	if (aux)
++		iounmap(aux);
++nodes:
++	of_node_put(saw);
++	of_node_put(acc);
++	of_node_put(cpu);
++	if (ret)
++		return dev_err_probe(dev, ret, "CPU1 clock handoff not applied\n");
++	return 0;
++}
++
++static struct platform_driver expressatt_cpu1_driver = {
++	.probe = expressatt_cpu1_probe,
++	.driver = {
++		.name = "expressatt-cpu1-clock",
++		.suppress_bind_attrs = true,
++	},
++};
++
++static int __init expressatt_cpu1_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	if (!of_machine_is_compatible("samsung,expressatt"))
++		return 0;
++	ret = platform_driver_register(&expressatt_cpu1_driver);
++	if (ret)
++		return ret;
++	pdev = platform_device_register_simple("expressatt-cpu1-clock", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		platform_driver_unregister(&expressatt_cpu1_driver);
++		return PTR_ERR(pdev);
++	}
++	return 0;
++}
++late_initcall_sync(expressatt_cpu1_init);
+-- 
+2.43.0
+

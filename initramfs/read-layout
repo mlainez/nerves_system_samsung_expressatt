@@ -1,0 +1,28 @@
+#!/bin/sh
+# Accept only the two documented nested MBR layouts; output the selected slot.
+set -eu
+[ "$#" -eq 1 ]
+# hexdump emits decimal byte tokens; splitting them supplies the positional parser.
+# shellcheck disable=SC2046
+set -- $(hexdump -v -s446 -n66 -e '1/1 "%u "' "$1")
+[ "$#" -eq 66 ]
+slot=
+entry=0
+while [ "$entry" -lt 4 ]; do
+    start=$(($9 + ${10} * 256 + ${11} * 65536 + ${12} * 16777216))
+    count=$((${13} + ${14} * 256 + ${15} * 65536 + ${16} * 16777216))
+    case "$entry:$1:$5:$start:$count" in
+        0:128:131:4096:131072) slot=a ;;
+        0:128:131:135168:131072) slot=b ;;
+        1:0:131:266240:524288) [ "$slot" = a ] ;;
+        1:0:131:790528:524288) [ "$slot" = b ] ;;
+        2:0:131:1314816:9392128) : ;;
+        3:0:0:0:0)
+            [ "$2$3$4$6$7$8" = 000000 ] ;;
+        *) exit 1 ;;
+    esac
+    shift 16
+    entry=$((entry + 1))
+done
+[ "$1:$2" = 85:170 ]
+printf '%s\n' "$slot"

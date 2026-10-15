@@ -1,0 +1,38 @@
+From b37f0fc0ab1af6c0481ae9ed74d7e22aa150f15e Mon Sep 17 00:00:00 2001
+From: Marc Lainez <marc.lainez@gmail.com>
+Date: Wed, 14 Oct 2026 06:59:03 +0200
+Subject: [PATCH] wifi: wcn36xx: Skip feature exchange with firmware 1.2.2.15
+
+The Express stock firmware M8960AAAAANAAW1050126H reports API 1.2.2.15
+and does not answer the optional feature capability exchange. Each
+interface start consequently waits for the ten-second HAL timeout
+before proceeding with the default capability bitmap.
+
+A shorter userspace interface setup deadline can cancel the caller
+while it waits, causing the following DMA allocation to fail with
+EINTR. Extend the existing 1.2.2.24 feature-exchange exception to the
+observed 1.2.2.15 API. Keep all other firmware negotiation and the
+separate station, BSS and beacon format decisions unchanged.
+
+Signed-off-by: Marc Lainez <marc.lainez@gmail.com>
+---
+ drivers/net/wireless/ath/wcn36xx/main.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/ath/wcn36xx/main.c b/drivers/net/wireless/ath/wcn36xx/main.c
+index ad8a4bd91..d94ab42aa 100644
+--- a/drivers/net/wireless/ath/wcn36xx/main.c
++++ b/drivers/net/wireless/ath/wcn36xx/main.c
+@@ -243,7 +243,8 @@ static int wcn36xx_start(struct ieee80211_hw *hw)
+ 		goto out_free_dxe_ctl;
+ 	}
+ 
+-	if (!wcn36xx_is_fw_version(wcn, 1, 2, 2, 24)) {
++	if (!wcn36xx_is_fw_version(wcn, 1, 2, 2, 24) &&
++	    !wcn36xx_is_fw_version(wcn, 1, 2, 2, 15)) {
+ 		ret = wcn36xx_smd_feature_caps_exchange(wcn);
+ 		if (ret)
+ 			wcn36xx_warn("Exchange feature caps failed\n");
+-- 
+2.43.0
+

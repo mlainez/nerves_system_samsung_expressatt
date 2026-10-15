@@ -11,7 +11,8 @@ path = [
  "REUSE.toml",
  "mix.exs",
  "mix.lock",
- "VERSION"
+ "VERSION",
+ ".tool-versions"
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
@@ -36,7 +37,11 @@ path = [
  "package/**",
  "external.mk",
  "post-build.sh",
- "post-createfs.sh"
+ "post-createfs.sh",
+ "packages/**",
+ "scripts/**",
+ "initramfs/**",
+ "rootfs_overlay/usr/lib/expressatt/**"
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "The Buildroot developers <buildroot@buildroot.org>"
@@ -46,6 +51,9 @@ SPDX-License-Identifier = "GPL-2.0-or-later"
 [[annotations]]
 path = [
  "linux/*",
+ "linux.config",
+ "linux-nerves.fragment",
+ "linux-patches/*",
  "rootfs_overlay/usr/bin/config-pin"
 ]
 precedence = "override"
@@ -57,7 +65,7 @@ SPDX-License-Identifier = "GPL-2.0-only"
 path = [
  "uboot/*"
 ]
-precedence = "aggregate"
+precedence = "override"
 SPDX-FileCopyrightText = "2000-2013 Wolfgang Denk, DENX Software Engineering, wd@denx.de"
 SPDX-License-Identifier = "GPL-2.0-or-later"
 
@@ -79,7 +87,8 @@ path = [
  "rootfs_overlay/etc/boardid.config",
  "rootfs_overlay/etc/erlinit.config",
  "rootfs_overlay/etc/fw_env.config",
- "rootfs_overlay/etc/modprobe.d/wl18xx.conf"
+ "rootfs_overlay/etc/modprobe.d/wl18xx.conf",
+ "extlinux/*"
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
@@ -93,14 +102,4 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Adafruit"
 SPDX-License-Identifier = "CC-BY-SA-3.0"
-
-# TI Bluetooth files
-[[annotations]]
-path = [
- "rootfs_overlay/lib/firmware/ti-connectivity/*",
-]
-precedence = "aggregate"
-SPDX-FileCopyrightText = "2008 – 2013 Texas Instruments Incorporated"
-SPDX-License-Identifier = "LicenseRef-TI-Release"
-
 

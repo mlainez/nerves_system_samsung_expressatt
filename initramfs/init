@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+fail() {
+    echo "Express Nerves initramfs: $*" >/dev/kmsg
+    sync
+    reboot -f
+    exit 1
+}
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /run
+tries=0
+until [ -b /dev/mmcblk0p15 ]; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 100 ] || fail "userdata did not appear"
+    sleep 0.1
+done
+[ "$(cat /sys/class/block/mmcblk0p15/size)" = 10739712 ] || fail "wrong userdata size"
+slot=$(/sbin/read-layout /dev/mmcblk0p15) || fail "invalid nested MBR"
+[ "$(fw_printenv -n "$slot.nerves_fw_platform")" = samsung-expressatt ] || fail "slot platform"
+[ "$(fw_printenv -n "$slot.nerves_fw_architecture")" = arm ] || fail "slot architecture"
+uuid=$(fw_printenv -n "$slot.nerves_fw_uuid") || fail "slot UUID unavailable"
+case "$uuid" in ''|*[!a-zA-Z0-9-]*) fail "invalid slot UUID" ;; esac
+mkdir -p /dev/.nerves
+printf '%s\n' "$slot" > /dev/.nerves/boot-slot
+printf '%s\n' "$uuid" > /dev/.nerves/boot-uuid
+
+dmsetup create nerves_root_a --table '0 524288 linear /dev/mmcblk0p15 266240' || fail "root A mapping"
+dmsetup create nerves_root_b --table '0 524288 linear /dev/mmcblk0p15 790528' || fail "root B mapping"
+dmsetup create nerves_app --table '0 9392128 linear /dev/mmcblk0p15 1314816' || fail "application mapping"
+dmsetup mknodes || fail "mapping nodes"
+ln -s /dev/mmcblk0p15 /dev/rootdisk0
+mount -t squashfs -o ro "/dev/mapper/nerves_root_$slot" /newroot || fail "selected root mount"
+for directory in dev proc sys run; do
+    mount --move "/$directory" "/newroot/$directory" || fail "move $directory"
+done
+exec switch_root /newroot /sbin/init

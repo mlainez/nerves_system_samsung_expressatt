@@ -1,0 +1,205 @@
+From 293c42f93db4393ee4f4e784eeb6897ab33f5634 Mon Sep 17 00:00:00 2001
+From: Marc Lainez <marc.lainez@gmail.com>
+Date: Wed, 14 Oct 2026 21:00:45 +0200
+Subject: [PATCH] clk: qcom: Defer MSM8960 bus floors until status is valid
+
+The firmware can publish an invalid AFAB or EBI1 status during clock
+probe and a valid status later. Removing the optional clock on the first
+read prevents a guarded consumer from using it after publication settles.
+
+Keep the active-only MSM8960 clocks registered without issuing a request.
+Use dedicated static clock instances with uncached rate reads so an
+unseeded getter can observe valid status without mutating the boot floor.
+Require a coherent valid floor under the RPM clock lock before determine,
+set or prepare, and preserve the first valid floor thereafter. Report the
+raw rejected probe sample for diagnosis.
+
+Bound the scoped rates below unsigned-long rounding overflow before any
+request. Leave other SoC clock instances and existing DFAB handoff alone.
+
+Signed-off-by: Marc Lainez <marc.lainez@gmail.com>
+---
+ drivers/clk/qcom/clk-rpm.c | 90 +++++++++++++++++++++++++++++++++-----
+ 1 file changed, 80 insertions(+), 10 deletions(-)
+
+diff --git a/drivers/clk/qcom/clk-rpm.c b/drivers/clk/qcom/clk-rpm.c
+index 262a61bae..ea73ebc84 100644
+--- a/drivers/clk/qcom/clk-rpm.c
++++ b/drivers/clk/qcom/clk-rpm.c
+@@ -31,13 +31,14 @@ static const struct clk_parent_data gcc_cxo[] = {
+ 	{ .fw_name = "cxo", .name = "cxo_board" },
+ };
+ 
+-#define DEFINE_CLK_RPM(_name, r_id)					      \
++#define DEFINE_CLK_RPM_FLAGS(_name, r_id, _flags)					      \
+ 	static struct clk_rpm clk_rpm_##_name##_a_clk;			      \
+ 	static struct clk_rpm clk_rpm_##_name##_clk = {			      \
+ 		.rpm_clk_id = (r_id),					      \
+ 		.peer = &clk_rpm_##_name##_a_clk,			      \
+ 		.rate = INT_MAX,					      \
+ 		.hw.init = &(struct clk_init_data){			      \
++			.flags = (_flags),					      \
+ 			.ops = &clk_rpm_ops,				      \
+ 			.name = #_name "_clk",				      \
+ 			.parent_data = gcc_pxo,				      \
+@@ -50,6 +51,7 @@ static const struct clk_parent_data gcc_cxo[] = {
+ 		.active_only = true,					      \
+ 		.rate = INT_MAX,					      \
+ 		.hw.init = &(struct clk_init_data){			      \
++			.flags = (_flags),					      \
+ 			.ops = &clk_rpm_ops,				      \
+ 			.name = #_name "_a_clk",			      \
+ 			.parent_data = gcc_pxo,				      \
+@@ -57,6 +59,8 @@ static const struct clk_parent_data gcc_cxo[] = {
+ 		},							      \
+ 	}
+ 
++#define DEFINE_CLK_RPM(_name, r_id) DEFINE_CLK_RPM_FLAGS(_name, r_id, 0)
++
+ #define DEFINE_CLK_RPM_XO_BUFFER(_name, offset)				      \
+ 	static struct clk_rpm clk_rpm_##_name##_clk = {			      \
+ 		.rpm_clk_id = QCOM_RPM_CXO_BUFFERS,			      \
+@@ -115,20 +119,54 @@ struct rpm_clk_desc {
+ 
+ static DEFINE_MUTEX(rpm_clk_lock);
+ 
++/* Keep the existing Hz-to-kHz helpers below their addition overflow bound. */
++#define RPM_BOOT_MAX_RATE (ULONG_MAX - 999)
++
++static int clk_rpm_boot_read_rate(struct clk_rpm *r, unsigned long *rate,
++				  u32 *raw)
++{
++	u32 value = 0;
++	int ret;
++
++	ret = qcom_rpm_read_status(r->rpm, r->rpm_clk_id, &value);
++	if (raw)
++		*raw = value;
++	if (ret)
++		return ret;
++	if (!value || value > RPM_BOOT_MAX_RATE / 1000)
++		return -ERANGE;
++	*rate = (unsigned long)value * 1000;
++	return 0;
++}
++
++/* Caller holds rpm_clk_lock; a successful floor is immutable until reboot. */
++static int clk_rpm_boot_seed(struct clk_rpm *r, u32 *raw)
++{
++	unsigned long rate;
++	int ret;
++
++	if (r->boot_rate)
++		return 0;
++	ret = clk_rpm_boot_read_rate(r, &rate, raw);
++	if (ret)
++		return ret;
++	r->boot_rate = rate;
++	r->rate = rate;
++	return 0;
++}
++
+ static int clk_rpm_handoff(struct clk_rpm *r)
+ {
+ 	int ret;
+ 	u32 value = INT_MAX;
+ 
+ 	if (r->preserve_boot_vote) {
+-		ret = qcom_rpm_read_status(r->rpm, r->rpm_clk_id, &value);
++		guard(mutex)(&rpm_clk_lock);
++		ret = clk_rpm_boot_seed(r, &value);
+ 		if (ret)
+-			return ret;
+-		if (!value || value > ULONG_MAX / 1000)
+-			return -ERANGE;
+-		r->boot_rate = (unsigned long)value * 1000;
+-		r->rate = r->boot_rate;
+-		r->enabled = false;
++			pr_warn("RPM bus resource %d probe floor deferred: %d raw=%u\n",
++				r->rpm_clk_id, ret, value);
++		/* Registration is read-only; explicit requests must seed first. */
+ 		return 0;
+ 	}
+ 
+@@ -193,6 +231,9 @@ static int clk_rpm_boot_prepare(struct clk_rpm *r)
+ 	int ret;
+ 
+ 	guard(mutex)(&rpm_clk_lock);
++	ret = clk_rpm_boot_seed(r, NULL);
++	if (ret)
++		return ret;
+ 	ret = clk_rpm_set_rate_active(r, max(r->rate, r->boot_rate));
+ 	if (!ret)
+ 		r->enabled = true;
+@@ -204,6 +245,8 @@ static void clk_rpm_boot_unprepare(struct clk_rpm *r)
+ 	int ret;
+ 
+ 	guard(mutex)(&rpm_clk_lock);
++	if (!r->boot_rate)
++		return;
+ 	ret = clk_rpm_set_rate_active(r, r->boot_rate);
+ 	if (!ret)
+ 		r->enabled = false;
+@@ -217,6 +260,11 @@ static int clk_rpm_boot_set_rate(struct clk_rpm *r, unsigned long rate)
+ 	int ret;
+ 
+ 	guard(mutex)(&rpm_clk_lock);
++	if (rate > RPM_BOOT_MAX_RATE)
++		return -ERANGE;
++	ret = clk_rpm_boot_seed(r, NULL);
++	if (ret)
++		return ret;
+ 	rate = max(rate, r->boot_rate);
+ 	if (r->enabled) {
+ 		ret = clk_rpm_set_rate_active(r, rate);
+@@ -427,6 +475,14 @@ static int clk_rpm_determine_rate(struct clk_hw *hw,
+ 	struct clk_rpm *r = to_clk_rpm(hw);
+ 
+ 	if (r->preserve_boot_vote) {
++		int ret;
++
++		guard(mutex)(&rpm_clk_lock);
++		if (req->rate > RPM_BOOT_MAX_RATE)
++			return -ERANGE;
++		ret = clk_rpm_boot_seed(r, NULL);
++		if (ret)
++			return ret;
+ 		if (r->boot_rate > req->max_rate)
+ 			return -EINVAL;
+ 		req->rate = max(req->rate, r->boot_rate);
+@@ -445,6 +501,15 @@ static unsigned long clk_rpm_recalc_rate(struct clk_hw *hw,
+ {
+ 	struct clk_rpm *r = to_clk_rpm(hw);
+ 
++	if (r->preserve_boot_vote) {
++		unsigned long rate;
++
++		guard(mutex)(&rpm_clk_lock);
++		if (!r->boot_rate)
++			return clk_rpm_boot_read_rate(r, &rate, NULL) ? 0 : rate;
++		return r->rate;
++	}
++
+ 	/*
+ 	 * RPM handles rate rounding and we don't have a way to
+ 	 * know what the rate will be, so just return whatever
+@@ -553,9 +618,14 @@ static const struct rpm_clk_desc rpm_clk_apq8064 = {
+ 	.num_clks = ARRAY_SIZE(apq8064_clks),
+ };
+ 
++DEFINE_CLK_RPM_FLAGS(msm8960_afab, QCOM_RPM_APPS_FABRIC_CLK,
++		     CLK_GET_RATE_NOCACHE);
++DEFINE_CLK_RPM_FLAGS(msm8960_ebi1, QCOM_RPM_EBI1_CLK,
++		     CLK_GET_RATE_NOCACHE);
++
+ static struct clk_rpm *msm8960_clks[] = {
+-	[RPM_APPS_FABRIC_A_CLK] = &clk_rpm_afab_a_clk,
+-	[RPM_EBI1_A_CLK] = &clk_rpm_ebi1_a_clk,
++	[RPM_APPS_FABRIC_A_CLK] = &clk_rpm_msm8960_afab_a_clk,
++	[RPM_EBI1_A_CLK] = &clk_rpm_msm8960_ebi1_a_clk,
+ 	[RPM_DAYTONA_FABRIC_CLK] = &clk_rpm_daytona_clk,
+ 	[RPM_DAYTONA_FABRIC_A_CLK] = &clk_rpm_daytona_a_clk,
+ };
+-- 
+2.43.0
+

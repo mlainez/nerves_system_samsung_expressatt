@@ -1,0 +1,287 @@
+From a66da27a92ca345be4e2f59cb963fdd038d98eb2 Mon Sep 17 00:00:00 2001
+From: Marc Lainez <marc.lainez@gmail.com>
+Date: Wed, 14 Oct 2026 20:34:25 +0200
+Subject: [PATCH] clk: qcom: Preserve MSM8960 boot bus floors for active votes
+
+Expose only active-only AFAB and EBI1 clocks on MSM8960. Seed their software rates from coherent RPM status without issuing handoff writes, and retain that published rate as a floor when the last explicit consumer releases its vote. Never alter the sleep context for these clocks.
+
+Add a bounded single-word RPM status API with a per-controller sequence offset, initially supported only on MSM8960. Keep existing DFAB and other controller handoff behavior unchanged. Optional bus-status failures leave those providers unavailable without suppressing DFAB.
+
+Preserve private rate/enabled state on failed acknowledgements, cache disabled rate requests, clamp requests to the saved floor, and report failed floor restoration. Published status is not a reconstruction of the previous APPS or sleep vote.
+
+Signed-off-by: Marc Lainez <marc.lainez@gmail.com>
+---
+ drivers/clk/qcom/clk-rpm.c   | 101 ++++++++++++++++++++++++++++++++++-
+ drivers/mfd/qcom_rpm.c       |  40 ++++++++++++++
+ include/linux/mfd/qcom_rpm.h |   2 +
+ 3 files changed, 141 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/clk/qcom/clk-rpm.c b/drivers/clk/qcom/clk-rpm.c
+index f8b300a38..262a61bae 100644
+--- a/drivers/clk/qcom/clk-rpm.c
++++ b/drivers/clk/qcom/clk-rpm.c
+@@ -90,6 +90,8 @@ struct clk_rpm {
+ 	const int xo_offset;
+ 	const bool active_only;
+ 	unsigned long rate;
++	unsigned long boot_rate;
++	bool preserve_boot_vote;
+ 	bool enabled;
+ 	bool branch;
+ 	struct clk_rpm *peer;
+@@ -106,6 +108,7 @@ struct rpm_cc {
+ };
+ 
+ struct rpm_clk_desc {
++	bool preserve_msm8960_bus;
+ 	struct clk_rpm **clks;
+ 	size_t num_clks;
+ };
+@@ -117,6 +120,18 @@ static int clk_rpm_handoff(struct clk_rpm *r)
+ 	int ret;
+ 	u32 value = INT_MAX;
+ 
++	if (r->preserve_boot_vote) {
++		ret = qcom_rpm_read_status(r->rpm, r->rpm_clk_id, &value);
++		if (ret)
++			return ret;
++		if (!value || value > ULONG_MAX / 1000)
++			return -ERANGE;
++		r->boot_rate = (unsigned long)value * 1000;
++		r->rate = r->boot_rate;
++		r->enabled = false;
++		return 0;
++	}
++
+ 	/*
+ 	 * The vendor tree simply reads the status for this
+ 	 * RPM clock.
+@@ -168,6 +183,50 @@ static void to_active_sleep(struct clk_rpm *r, unsigned long rate,
+ 		*sleep = *active;
+ }
+ 
++/*
++ * The status page cannot reconstruct a previous APPS or sleep vote. Preserve
++ * the published boot rate as an active floor and never alter the sleep set.
++ * These operations are scoped to MSM8960 AFAB_A and EBI1_A only.
++ */
++static int clk_rpm_boot_prepare(struct clk_rpm *r)
++{
++	int ret;
++
++	guard(mutex)(&rpm_clk_lock);
++	ret = clk_rpm_set_rate_active(r, max(r->rate, r->boot_rate));
++	if (!ret)
++		r->enabled = true;
++	return ret;
++}
++
++static void clk_rpm_boot_unprepare(struct clk_rpm *r)
++{
++	int ret;
++
++	guard(mutex)(&rpm_clk_lock);
++	ret = clk_rpm_set_rate_active(r, r->boot_rate);
++	if (!ret)
++		r->enabled = false;
++	else
++		pr_warn_ratelimited("RPM bus clock %d boot-floor restore failed: %d\n",
++				    r->rpm_clk_id, ret);
++}
++
++static int clk_rpm_boot_set_rate(struct clk_rpm *r, unsigned long rate)
++{
++	int ret;
++
++	guard(mutex)(&rpm_clk_lock);
++	rate = max(rate, r->boot_rate);
++	if (r->enabled) {
++		ret = clk_rpm_set_rate_active(r, rate);
++		if (ret)
++			return ret;
++	}
++	r->rate = rate;
++	return 0;
++}
++
+ static int clk_rpm_prepare(struct clk_hw *hw)
+ {
+ 	struct clk_rpm *r = to_clk_rpm(hw);
+@@ -177,6 +236,9 @@ static int clk_rpm_prepare(struct clk_hw *hw)
+ 	unsigned long active_rate, sleep_rate;
+ 	int ret = 0;
+ 
++	if (r->preserve_boot_vote)
++		return clk_rpm_boot_prepare(r);
++
+ 	mutex_lock(&rpm_clk_lock);
+ 
+ 	/* Don't send requests to the RPM if the rate has not been set. */
+@@ -225,6 +287,11 @@ static void clk_rpm_unprepare(struct clk_hw *hw)
+ 	unsigned long active_rate, sleep_rate;
+ 	int ret;
+ 
++	if (r->preserve_boot_vote) {
++		clk_rpm_boot_unprepare(r);
++		return;
++	}
++
+ 	guard(mutex)(&rpm_clk_lock);
+ 
+ 	if (!r->rate)
+@@ -324,6 +391,9 @@ static int clk_rpm_set_rate(struct clk_hw *hw,
+ 	unsigned long peer_rate = 0, peer_sleep_rate = 0;
+ 	int ret;
+ 
++	if (r->preserve_boot_vote)
++		return clk_rpm_boot_set_rate(r, rate);
++
+ 	guard(mutex)(&rpm_clk_lock);
+ 
+ 	if (!r->enabled)
+@@ -354,6 +424,14 @@ static int clk_rpm_set_rate(struct clk_hw *hw,
+ static int clk_rpm_determine_rate(struct clk_hw *hw,
+ 				  struct clk_rate_request *req)
+ {
++	struct clk_rpm *r = to_clk_rpm(hw);
++
++	if (r->preserve_boot_vote) {
++		if (r->boot_rate > req->max_rate)
++			return -EINVAL;
++		req->rate = max(req->rate, r->boot_rate);
++	}
++
+ 	/*
+ 	 * RPM handles rate rounding and we don't have a way to
+ 	 * know what the rate will be, so just return whatever
+@@ -476,11 +554,14 @@ static const struct rpm_clk_desc rpm_clk_apq8064 = {
+ };
+ 
+ static struct clk_rpm *msm8960_clks[] = {
++	[RPM_APPS_FABRIC_A_CLK] = &clk_rpm_afab_a_clk,
++	[RPM_EBI1_A_CLK] = &clk_rpm_ebi1_a_clk,
+ 	[RPM_DAYTONA_FABRIC_CLK] = &clk_rpm_daytona_clk,
+ 	[RPM_DAYTONA_FABRIC_A_CLK] = &clk_rpm_daytona_a_clk,
+ };
+ 
+ static const struct rpm_clk_desc rpm_clk_msm8960 = {
++	.preserve_msm8960_bus = true,
+ 	.clks = msm8960_clks,
+ 	.num_clks = ARRAY_SIZE(msm8960_clks),
+ };
+@@ -554,6 +635,13 @@ static int rpm_clk_probe(struct platform_device *pdev)
+ 
+ 	rpm_clks = desc->clks;
+ 	num_clks = desc->num_clks;
++	if (desc->preserve_msm8960_bus) {
++		/* A failed optional bus-status read must not remove existing DFAB. */
++		rpm_clks = devm_kmemdup(&pdev->dev, rpm_clks,
++					sizeof(*rpm_clks) * num_clks, GFP_KERNEL);
++		if (!rpm_clks)
++			return -ENOMEM;
++	}
+ 
+ 	rcc = devm_kzalloc(&pdev->dev, sizeof(*rcc), GFP_KERNEL);
+ 	if (!rcc)
+@@ -570,9 +658,18 @@ static int rpm_clk_probe(struct platform_device *pdev)
+ 		rpm_clks[i]->rpm = rpm;
+ 		rpm_clks[i]->rpm_cc = rcc;
+ 
++		if (desc->preserve_msm8960_bus &&
++		    (i == RPM_APPS_FABRIC_A_CLK || i == RPM_EBI1_A_CLK))
++			rpm_clks[i]->preserve_boot_vote = true;
++
+ 		ret = clk_rpm_handoff(rpm_clks[i]);
+-		if (ret)
+-			goto err;
++		if (ret) {
++			if (!rpm_clks[i]->preserve_boot_vote)
++				goto err;
++			dev_warn(&pdev->dev, "Bus clock %zu status unavailable: %d\n",
++				 i, ret);
++			rpm_clks[i] = NULL;
++		}
+ 	}
+ 
+ 	for (i = 0; i < num_clks; i++) {
+diff --git a/drivers/mfd/qcom_rpm.c b/drivers/mfd/qcom_rpm.c
+index 0defb3279..5ee748120 100644
+--- a/drivers/mfd/qcom_rpm.c
++++ b/drivers/mfd/qcom_rpm.c
+@@ -28,6 +28,7 @@ struct qcom_rpm_resource {
+ 
+ struct qcom_rpm_data {
+ 	u32 version;
++	unsigned int status_sequence;
+ 	const struct qcom_rpm_resource *resource_table;
+ 	unsigned int n_resources;
+ 	unsigned int req_ctx_off;
+@@ -328,6 +329,7 @@ static const struct qcom_rpm_resource msm8960_rpm_resource_table[] = {
+ };
+ 
+ static const struct qcom_rpm_data msm8960_template = {
++	.status_sequence = 7,
+ 	.version = 3,
+ 	.resource_table = msm8960_rpm_resource_table,
+ 	.n_resources = ARRAY_SIZE(msm8960_rpm_resource_table),
+@@ -445,6 +447,44 @@ static const struct of_device_id qcom_rpm_of_match[] = {
+ };
+ MODULE_DEVICE_TABLE(of, qcom_rpm_of_match);
+ 
++/**
++ * qcom_rpm_read_status() - Read one coherent firmware-published resource word
++ * @rpm: RPM controller
++ * @resource: resource identifier, not a status-page index
++ * @value: output word, left unchanged on failure
++ *
++ * This is firmware status, not a measurement or a saved APPS/sleep vote.
++ * Only controllers with a known status sequence protocol are supported.
++ * Return: 0 on success, or a negative errno. At most three attempts are made.
++ */
++int qcom_rpm_read_status(struct qcom_rpm *rpm, int resource, u32 *value)
++{
++	const struct qcom_rpm_resource *res;
++	unsigned int attempt;
++	u32 before, after, status;
++
++	if (!value || resource < 0 ||
++	    (unsigned int)resource >= rpm->data->n_resources)
++		return -EINVAL;
++	if (!rpm->data->status_sequence)
++		return -EOPNOTSUPP;
++	res = &rpm->data->resource_table[resource];
++	if (res->size != 1 || res->status_id >= 0x100)
++		return -EINVAL;
++
++	for (attempt = 0; attempt < 3; attempt++) {
++		before = readl(RPM_STATUS_REG(rpm, rpm->data->status_sequence));
++		status = readl(RPM_STATUS_REG(rpm, res->status_id));
++		after = readl(RPM_STATUS_REG(rpm, rpm->data->status_sequence));
++		if (before == after && !(before & 1)) {
++			*value = status;
++			return 0;
++		}
++	}
++	return -EBUSY;
++}
++EXPORT_SYMBOL_GPL(qcom_rpm_read_status);
++
+ int qcom_rpm_write(struct qcom_rpm *rpm,
+ 		   int state,
+ 		   int resource,
+diff --git a/include/linux/mfd/qcom_rpm.h b/include/linux/mfd/qcom_rpm.h
+index 4b6b644f1..a64a641da 100644
+--- a/include/linux/mfd/qcom_rpm.h
++++ b/include/linux/mfd/qcom_rpm.h
+@@ -9,6 +9,8 @@ struct qcom_rpm;
+ #define QCOM_RPM_ACTIVE_STATE	0
+ #define QCOM_RPM_SLEEP_STATE	1
+ 
++int qcom_rpm_read_status(struct qcom_rpm *rpm, int resource, u32 *value);
++
+ int qcom_rpm_write(struct qcom_rpm *rpm, int state, int resource, u32 *buf, size_t count);
+ 
+ #endif
+-- 
+2.43.0
+

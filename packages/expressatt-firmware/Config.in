@@ -1,0 +1,5 @@
+config BR2_PACKAGE_EXPRESSATT_FIRMWARE
+	bool "Express WCNSS firmware and device calibration"
+	help
+	  Installs privately extracted original SYS5 firmware and the validated
+	  same-device legacy NV projection. Never redistributed with this system.

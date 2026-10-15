@@ -1,8 +1,4 @@
 #!/bin/sh
-
-set -e
-
-FWUP_CONFIG=$NERVES_DEFCONFIG_DIR/fwup.conf
-
-# Run the common post-image processing for nerves
-$BR2_EXTERNAL_NERVES_PATH/board/nerves-common/post-createfs.sh $TARGET_DIR $FWUP_CONFIG
+set -eu
+"$HOST_DIR/bin/fakeroot" -- "$NERVES_DEFCONFIG_DIR/scripts/create-boot-img.sh"
+"$BR2_EXTERNAL_NERVES_PATH/board/nerves-common/post-createfs.sh" "$TARGET_DIR" "$NERVES_DEFCONFIG_DIR/fwup.conf"

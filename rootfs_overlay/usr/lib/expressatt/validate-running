@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in a|b) slot=$1 ;; *) exit 1 ;; esac
+[ "$(cat /dev/.nerves/boot-slot)" = "$slot" ]
+running_uuid=$(cat /dev/.nerves/boot-uuid)
+[ -n "$running_uuid" ]
+expected=$(fw_printenv -n "$slot.nerves_fw_uuid")
+[ "$running_uuid" = "$expected" ]

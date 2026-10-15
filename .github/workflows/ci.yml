@@ -1,57 +1,23 @@
 # SPDX-FileCopyrightText: None
 # SPDX-License-Identifier: CC0-1.0
 
-name: CI
+name: Source checks
 
-on: [push]
-
-env:
-  OTP_VERSION: 29.0.6
-  ELIXIR_VERSION: 1.20.4-otp-29
-  NERVES_BOOTSTRAP_VERSION: 1.16.0
+on: [push, pull_request, workflow_dispatch]
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
-  get-br-dependencies:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+  shellcheck:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: gridpoint-com/actions-nerves-system@v1
-      - name: Get Buildroot Dependencies
-        uses: ./.actions/get-br-dependencies
-        with:
-          otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          nerves-bootstrap-version: ${{ env.NERVES_BOOTSTRAP_VERSION }}
-          push-to-download-site: true
-          download-site-bucket-uri: ${{ vars.DOWNLOAD_SITE_BUCKET_URI }}
-          aws-role: ${{ secrets.AWS_ROLE }}
-          aws-region: ${{ vars.AWS_REGION }}
-  build-system:
-    needs: [get-br-dependencies]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@v7
-      - uses: gridpoint-com/actions-nerves-system@v1
-      - name: Build nerves_system
-        uses: ./.actions/build-system
-        with:
-          otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          nerves-bootstrap-version: ${{ env.NERVES_BOOTSTRAP_VERSION }}
-  deploy-system:
-    needs: [build-system]
-    if: github.ref_type == 'tag'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: gridpoint-com/actions-nerves-system@v1
-      - name: Deploy nerves_system
-        uses: ./.actions/deploy-system
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+      - name: Check host and initramfs scripts
+        run: |
+          shellcheck post-build.sh post-createfs.sh scripts/create-boot-img.sh \
+            initramfs/init initramfs/read-layout \
+            rootfs_overlay/usr/lib/expressatt/validate-running
+
+# Full builds require locally extracted, device-specific calibration. Do not
+# upload that input, system archives, or firmware images to public CI artifacts.

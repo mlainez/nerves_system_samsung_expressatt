@@ -1,8 +1,8 @@
-defmodule NervesSystemBbb.MixProject do
+defmodule NervesSystemSamsungExpressatt.MixProject do
   use Mix.Project
 
-  @github_organization "nerves-project"
-  @app :nerves_system_bbb
+  @github_organization "mlainez"
+  @app :nerves_system_samsung_expressatt
   @source_url "https://github.com/#{@github_organization}/#{@app}"
   @version Path.join(__DIR__, "VERSION")
            |> File.read!()
@@ -12,8 +12,7 @@ defmodule NervesSystemBbb.MixProject do
     [
       app: @app,
       version: @version,
-      # Because we're using OTP 27, we need to enforce Elixir 1.17 or later.
-      elixir: "~> 1.17",
+      elixir: "~> 1.20",
       compilers: Mix.compilers() ++ [:nerves_package],
       nerves_package: nerves_package(),
       description: description(),
@@ -41,9 +40,7 @@ defmodule NervesSystemBbb.MixProject do
   defp nerves_package do
     [
       type: :system,
-      artifact_sites: [
-        {:github_releases, "#{@github_organization}/#{@app}"}
-      ],
+      artifact_sites: [],
       build_runner_opts: build_runner_opts(),
       platform: Nerves.System.BR,
       platform_config: [
@@ -54,11 +51,11 @@ defmodule NervesSystemBbb.MixProject do
       # llvm-based tooling that may need more precise processor information.
       env: [
         {"TARGET_ARCH", "arm"},
-        {"TARGET_CPU", "cortex_a8"},
+        {"TARGET_CPU", "cortex_a9"},
         {"TARGET_OS", "linux"},
         {"TARGET_ABI", "gnueabihf"},
         {"TARGET_GCC_FLAGS",
-         "-mabi=aapcs-linux -mfpu=vfpv3 -marm -fstack-protector-strong -mfloat-abi=hard -mcpu=cortex-a8 -fPIE -pie -Wl,-z,now -Wl,-z,relro"}
+         "-mabi=aapcs-linux -mfpu=neon -marm -fstack-protector-strong -mfloat-abi=hard -mcpu=cortex-a9 -fPIE -pie -Wl,-z,now -Wl,-z,relro"}
       ],
       checksum: package_files()
     ]
@@ -68,7 +65,7 @@ defmodule NervesSystemBbb.MixProject do
     [
       {:nerves, "~> 1.11 or ~> 2.0 or ~> 2.0.0-dev", runtime: false},
       {:nerves_system_br, "1.35.0", runtime: false},
-      {:nerves_toolchain_armv7_nerves_linux_gnueabihf, "~> 15.3.0", runtime: false},
+      {:nerves_toolchain_armv7_nerves_linux_gnueabihf, "15.3.0", runtime: false},
       {:nerves_system_linter, "~> 0.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.22", only: :docs, runtime: false}
     ]
@@ -76,7 +73,7 @@ defmodule NervesSystemBbb.MixProject do
 
   defp description do
     """
-    Nerves System - BeagleBone Black, BeagleBone Green, PocketBeagle and more
+    Nerves System - Samsung Galaxy Express SGH-I437
     """
   end
 
@@ -96,9 +93,7 @@ defmodule NervesSystemBbb.MixProject do
       files: package_files(),
       licenses: ["GPL-2.0-only", "GPL-2.0-or-later"],
       links: %{
-        "GitHub" => @source_url,
-        "REUSE Compliance" =>
-          "https://api.reuse.software/info/github.com/nerves-project/nerves_system_bbb"
+        "GitHub" => @source_url
       }
     ]
   end
@@ -106,9 +101,16 @@ defmodule NervesSystemBbb.MixProject do
   defp package_files do
     [
       "fwup_include",
-      "linux",
+      "linux.config",
+      "linux-nerves.fragment",
+      "linux-patches",
+      "extlinux",
       "rootfs_overlay",
-      "uboot",
+      "packages",
+      "scripts",
+      "initramfs",
+      "external.mk",
+      "Config.in",
       "busybox.fragment",
       "CHANGELOG.md",
       "fwup-ops.conf",
@@ -119,7 +121,6 @@ defmodule NervesSystemBbb.MixProject do
       "post-build.sh",
       "post-createfs.sh",
       "README.md",
-      "REUSE.toml",
       "VERSION"
     ]
   end

@@ -1,0 +1,89 @@
+From f2f63e74c07ab275bfbb7faf2572debd6b90b168 Mon Sep 17 00:00:00 2001
+From: Marc Lainez <marc.lainez@gmail.com>
+Date: Wed, 14 Oct 2026 22:13:00 +0200
+Subject: [PATCH] wifi: wcn36xx: Use legacy association messages for firmware
+ 1.2.2.15
+
+Firmware 1.2.2.15 is currently sent the non-VHT v1 STA/BSS structures,
+because only 1.2.2.24 selects v0. The older firmware rejects association
+configuration with HAL status5 after successful 802.11 authentication.
+
+Select the existing v0 STA/BSS serializers for the exact older revision.
+Its BSS payload ends after persona and spectrum management, so omit the
+two trailing TX-power fields only for 1.2.2.15. This matches the shipped
+prima driver's105-byte STA and459-byte BSS payloads, including the caller
+chain identifying the final persona/spectrum bytes. Keep1.2.2.24 and all
+other firmware revisions unchanged.
+
+Actual-source dispatch and wire serialization regressions fail before
+this change and pass afterwards, including32-bit sanitizer runs. The
+installed-device association test remains pending.
+
+Signed-off-by: Marc Lainez <marc.lainez@gmail.com>
+---
+ drivers/net/wireless/ath/wcn36xx/smd.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/wireless/ath/wcn36xx/smd.c b/drivers/net/wireless/ath/wcn36xx/smd.c
+index c0b477345..2494fd0ee 100644
+--- a/drivers/net/wireless/ath/wcn36xx/smd.c
++++ b/drivers/net/wireless/ath/wcn36xx/smd.c
+@@ -1442,6 +1442,12 @@ static int wcn36xx_smd_config_sta_rsp(struct wcn36xx *wcn,
+ 	return 0;
+ }
+ 
++static bool wcn36xx_smd_uses_sta_v0(struct wcn36xx *wcn)
++{
++	return wcn36xx_is_fw_version(wcn, 1, 2, 2, 15) ||
++		wcn36xx_is_fw_version(wcn, 1, 2, 2, 24);
++}
++
+ static int wcn36xx_smd_config_sta_v1(struct wcn36xx *wcn,
+ 				     struct ieee80211_vif *vif,
+ 				     struct ieee80211_sta *sta)
+@@ -1501,7 +1507,7 @@ int wcn36xx_smd_config_sta(struct wcn36xx *wcn, struct ieee80211_vif *vif,
+ 
+ 	mutex_lock(&wcn->hal_mutex);
+ 
+-	if (!wcn36xx_is_fw_version(wcn, 1, 2, 2, 24))
++	if (!wcn36xx_smd_uses_sta_v0(wcn))
+ 		ret = wcn36xx_smd_config_sta_v1(wcn, vif, sta);
+ 	else
+ 		ret = wcn36xx_smd_config_sta_v0(wcn, vif, sta);
+@@ -1733,6 +1739,15 @@ static int wcn36xx_smd_config_bss_v1(struct wcn36xx *wcn,
+ 	return ret;
+ }
+ 
++static void wcn36xx_smd_config_bss_v0_legacy(struct wcn36xx *wcn,
++					     struct wcn36xx_hal_config_bss_req_msg *msg)
++{
++	/* This firmware has persona/spectrum fields, but no trailing TX powers. */
++	if (wcn36xx_is_fw_version(wcn, 1, 2, 2, 15))
++		msg->header.len = sizeof(msg->header) +
++			offsetof(struct wcn36xx_hal_config_bss_params, tx_mgmt_power);
++}
++
+ static int wcn36xx_smd_config_bss_v0(struct wcn36xx *wcn,
+ 				     struct ieee80211_vif *vif,
+ 				     struct ieee80211_sta *sta,
+@@ -1756,6 +1771,8 @@ static int wcn36xx_smd_config_bss_v0(struct wcn36xx *wcn,
+ 	wcn36xx_smd_set_bss_params(wcn, vif, sta, bssid, update, bss);
+ 	wcn36xx_smd_set_sta_params(wcn, vif, sta, sta_params);
+ 
++	wcn36xx_smd_config_bss_v0_legacy(wcn, msg);
++
+ 	PREPARE_HAL_BUF(wcn->hal_buf, (*msg));
+ 
+ 	wcn36xx_dbg(WCN36XX_DBG_HAL,
+@@ -1828,7 +1845,7 @@ int wcn36xx_smd_config_bss(struct wcn36xx *wcn, struct ieee80211_vif *vif,
+ 
+ 	mutex_lock(&wcn->hal_mutex);
+ 
+-	if (!wcn36xx_is_fw_version(wcn, 1, 2, 2, 24))
++	if (!wcn36xx_smd_uses_sta_v0(wcn))
+ 		ret = wcn36xx_smd_config_bss_v1(wcn, vif, sta, bssid, update);
+ 	else
+ 		ret = wcn36xx_smd_config_bss_v0(wcn, vif, sta, bssid, update);
+-- 
+2.43.0
+
