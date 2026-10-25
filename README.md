@@ -1,7 +1,7 @@
 # Samsung Galaxy Express SGH-I437 Nerves system
 
 This development system targets samsung-expressatt/MSM8960 with nerves_system_br
-1.35.0 and the official armv7 hard-float glibc toolchain 15.3.0. There is no
+1.35.3 and the official armv7 hard-float glibc toolchain 15.3.0. There is no
 ExpressATT binary release.
 
 The development phone has booted persistent Nerves with USB IEx/SSH, Wi-Fi
