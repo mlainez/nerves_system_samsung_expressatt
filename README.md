@@ -1,9 +1,8 @@
 # Samsung Galaxy Express SGH-I437 Nerves system
 
-This development system targets samsung-expressatt/MSM8960. It derives from
-official nerves_system_bbb, using nerves_system_br 1.35.0 and the official armv7
-hard-float glibc toolchain 15.3.0. The existing version number and BeagleBone
-changelog are inherited from that template; there is no ExpressATT binary release.
+This development system targets samsung-expressatt/MSM8960 with nerves_system_br
+1.35.0 and the official armv7 hard-float glibc toolchain 15.3.0. There is no
+ExpressATT binary release.
 
 The development phone has booted persistent Nerves with USB IEx/SSH, Wi-Fi
 scanning and WPA2 association, USB charging, native firmware upload, validation
@@ -90,17 +89,17 @@ contain private calibration and must remain local. Public CI checks source only.
 
 ## Storage and boot
 
-All offsets are512-byte sectors inside existing USERDATA (/dev/mmcblk0p15).
+All offsets are 512-byte sectors inside existing USERDATA (/dev/mmcblk0p15).
 The Android GPT/PIT stays untouched; no whole eMMC or boot-chain writes occur.
 The current MBR layout (local port decision-7) is:
 
 | Region | Start | Count |
 |---|---:|---:|
-| Redundant environment0/1 |2048/2304|256each|
-| ext2 bootA/B |4096/135168|131072each|
-| gzip squashfs rootA/B |266240/790528|524288each|
-| Fixed f2fs application |1314816|9392128|
-| Reserved tail |10706944|32768|
+| Redundant environment 0/1 | 2048/2304 | 256 each |
+| ext2 boot A/B | 4096/135168 | 131072 each |
+| gzip squashfs root A/B | 266240/790528 | 524288 each |
+| Fixed f2fs application | 1314816 | 9392128 |
+| Reserved tail | 10706944 | 32768 |
 
 Ordinary lk2nd reads extlinux from the first nested MBR partition. Firmware
 upgrade and revert tasks switch the paired boot/root MBR entries, as in the FP2
@@ -127,7 +126,7 @@ No blanket power-cut safety is claimed.
 
 Standard nerves_pack/VintageNetDirect USB networking, credential-free
 VintageNetWiFi and generated public-key SSH use a unique board hostname.
-Buildroot10.0.42.x/Dropbear/ACM policy does not carry over. A supervised board
+Buildroot 10.0.42.x/Dropbear/ACM policy does not carry over. A supervised board
 service selects proven USB-host charging and loads radio modules; VintageNet
 owns link configuration and scanning.
 

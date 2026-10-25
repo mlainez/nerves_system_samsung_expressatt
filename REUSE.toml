@@ -7,7 +7,6 @@ path = [
  ".gitignore",
  "CHANGELOG.md",
  "nerves_defconfig",
- "NOTICE",
  "REUSE.toml",
  "mix.exs",
  "mix.lock",
@@ -20,12 +19,10 @@ SPDX-License-Identifier = "CC0-1.0"
 
 [[annotations]]
 path = [
- "docs/kernel.md",
- "README.md",
- "uboot/README.md"
+ "README.md"
 ]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2016 Frank Hunleth"
+SPDX-FileCopyrightText = "Express port contributors"
 SPDX-License-Identifier = "CC-BY-4.0"
 
 # Buildroot derived or related files
@@ -34,7 +31,6 @@ SPDX-License-Identifier = "CC-BY-4.0"
 [[annotations]]
 path = [
  "Config.in",
- "package/**",
  "external.mk",
  "post-build.sh",
  "post-createfs.sh",
@@ -50,24 +46,13 @@ SPDX-License-Identifier = "GPL-2.0-or-later"
 # Linux kernel derived or related files
 [[annotations]]
 path = [
- "linux/*",
  "linux.config",
  "linux-nerves.fragment",
- "linux-patches/*",
- "rootfs_overlay/usr/bin/config-pin"
+ "linux-patches/*"
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "Various"
 SPDX-License-Identifier = "GPL-2.0-only"
-
-# U-Boot derived or related files
-[[annotations]]
-path = [
- "uboot/*"
-]
-precedence = "override"
-SPDX-FileCopyrightText = "2000-2013 Wolfgang Denk, DENX Software Engineering, wd@denx.de"
-SPDX-License-Identifier = "GPL-2.0-or-later"
 
 # Fwup config files
 [[annotations]]
@@ -87,19 +72,8 @@ path = [
  "rootfs_overlay/etc/boardid.config",
  "rootfs_overlay/etc/erlinit.config",
  "rootfs_overlay/etc/fw_env.config",
- "rootfs_overlay/etc/modprobe.d/wl18xx.conf",
  "extlinux/*"
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "None"
 SPDX-License-Identifier = "CC0-1.0"
-
-# https://github.com/adafruit/Fritzing-Library
-[[annotations]]
-path = [
- "assets/images/beaglebone-black.png"
-]
-precedence = "aggregate"
-SPDX-FileCopyrightText = "Adafruit"
-SPDX-License-Identifier = "CC-BY-SA-3.0"
-
