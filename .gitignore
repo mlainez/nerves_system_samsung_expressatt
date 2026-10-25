@@ -20,5 +20,7 @@ erl_crash.dump
 /build.log
 /archive.log
 /.nerves
-/firmware
 /local.mk
+
+# Artifact archives created by mix nerves.artifact
+/*.tar.gz

@@ -1,5 +1,13 @@
 config BR2_PACKAGE_EXPRESSATT_FIRMWARE
-	bool "Express WCNSS firmware and device calibration"
+	bool "expressatt-firmware [Galaxy Express]"
 	help
-	  Installs privately extracted original SYS5 firmware and the validated
-	  same-device legacy NV projection. Never redistributed with this system.
+	  Firmware plumbing for the Samsung Galaxy Express. Ships no
+	  firmware.
+
+	  The WCNSS (RIVA) Wi-Fi image lives on the phone's own `system`
+	  partition and its NV calibration on `persist`. Neither may be
+	  redistributed, and the calibration is unique to each phone.
+	  expressatt-bringup, run by erlinit before Erlang starts, copies
+	  them from the read-only stock partitions into /run/firmware,
+	  projects the calibration into the layout wcn36xx expects and
+	  points the kernel firmware loader there.

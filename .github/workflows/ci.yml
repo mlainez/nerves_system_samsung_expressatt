@@ -17,7 +17,5 @@ jobs:
         run: |
           shellcheck post-build.sh post-createfs.sh scripts/create-boot-img.sh \
             initramfs/init initramfs/read-layout \
+            packages/expressatt-firmware/expressatt-bringup \
             rootfs_overlay/usr/lib/expressatt/validate-running
-
-# Full builds require locally extracted, device-specific calibration. Do not
-# upload that input, system archives, or firmware images to public CI artifacts.

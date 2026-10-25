@@ -14,11 +14,9 @@ open. This is not a stock-to-Nerves installer or a finished general-purpose BSP.
 
 Use the versions in `.tool-versions`: Elixir 1.20.4, OTP 29.0.2 and fwup 1.16.0,
 plus nerves_bootstrap and the standard Nerves Linux build prerequisites.
-The Buildroot firmware extractor also needs Bash, Python 3.10+, e2fsprogs
-(`debugfs`), GNU coreutils and verified original SYSTEM/PERSIST backups.
 Heimdall and Fastboot are needed for the existing device recovery workflow.
 
-Clone the system and prepare the private firmware described below:
+Clone the system:
 
 ```sh
 git clone https://github.com/mlainez/nerves_system_samsung_expressatt.git
@@ -36,8 +34,9 @@ target-specific dependencies (replace the example path with your clone):
 ```
 
 In the application, set `MIX_TARGET=samsung_expressatt` for `mix deps.get` and
-`mix firmware`. There are no downloadable system artifacts; the system builds
-locally. The application must provide supervised board startup to select the
+`mix firmware`. Tagged releases carry a prebuilt system artifact that Nerves
+downloads from this repository's GitHub releases; any other commit builds the
+system locally. The application must provide supervised board startup to select the
 verified USB-host charging mode, load the WCNSS modules and wait for the memory
 clock driver's READY state before validation. VintageNet owns Wi-Fi credentials
 and networking. Those application services are separate from this system package.
@@ -58,34 +57,28 @@ for that state before allowing StartupGuard validation. Failure retains resource
 until reboot and prevents validation. Host tests do not establish charging or
 cold-boot behavior on another phone.
 
-## Private firmware
+## Firmware
 
-`firmware/` is ignored and non-redistributable. Use the
-[Buildroot board extractor](https://github.com/Spin42/buildroot-android/blob/samsung-expressatt/buildroot-external/board/samsung-expressatt/scripts/prepare_firmware.sh)
-for the five original SYSTEM WCNSS files and stock-layout, same-phone NV
-projection. In a checkout of buildroot-android's `samsung-expressatt` branch, run:
+The system ships no WCNSS firmware. The RIVA Wi-Fi image is a Qualcomm/Samsung
+file that may not be redistributed, and the NV calibration is unique to each
+phone. Both are already on the phone, on stock partitions this system never
+writes: `system` (mmcblk0p14) holds `/etc/firmware/wcnss.*` and `persist`
+(mmcblk0p16) holds the raw `WCNSS_qcom_wlan_nv.bin`.
 
-```sh
-buildroot-external/board/samsung-expressatt/scripts/prepare_firmware.sh \
-  /absolute/path/to/verified-backups /absolute/path/to/nerves_system_samsung_expressatt/firmware
-```
+erlinit runs `/usr/sbin/expressatt-bringup` before Erlang starts. It mounts
+each partition read-only with `noload` only long enough to copy the files into
+`/run/firmware`, projects the raw calibration into the layout wcn36xx expects
+(the first 28456 bytes with the firmware configuration defaults inserted at
+offset 27084, as stock vos_nv_open does), unmounts again and points
+`firmware_class.path` at `/run/firmware`. The script logs to the kernel ring
+buffer (`dmesg | grep expressatt-bringup`) and always exits 0, so a phone with
+unusable firmware still boots without Wi-Fi. The shipped regulatory database
+stays in `/lib/firmware`.
 
-The backups directory must contain `system.img`, `persist.img` and their
-`SHA256SUMS`. The projector currently accepts only the original development
-phone's verified NV identity. Another SGH-I437 needs a reviewed calibration
-identity/schema; never reuse a different phone's calibration.
-
-Create the manifest consumed by the system package inside `firmware/`:
-
-```sh
-sha256sum wcnss.mdt wcnss.b00 wcnss.b01 wcnss.b02 wcnss.b04 \
-  wlan/prima/WCNSS_qcom_wlan_nv.bin > SHA256SUMS
-sha256sum --check SHA256SUMS
-```
-
-The package verifies this manifest before installing. No PERSIST write or
-build-time Wi-Fi credentials are needed. Firmware images and system archives
-contain private calibration and must remain local. Public CI checks source only.
+The kernel patches target the firmware this phone's stock SYSTEM carries, API
+1.2.2.15 with packed MDT program headers; see `linux-patches/`. The firmware
+set shipped in public vendor-blob repositories for this phone is a different,
+unsigned build and is not used.
 
 ## Storage and boot
 

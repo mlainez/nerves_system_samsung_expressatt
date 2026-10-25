@@ -1,0 +1,136 @@
+#!/bin/sh
+# Stage this phone's WCNSS firmware from its own stock partitions for the
+# kernel firmware loader.
+#
+# erlinit is PID 1 and starts the BEAM; there is no init system. erlinit runs
+# this script through --pre-run-exec (see /etc/erlinit.config), after its -m
+# mounts and before Erlang starts. The firmware is not shipped in the image:
+# the WCNSS images are Qualcomm/Samsung files that may not be redistributed
+# and the NV calibration is unique to each phone. Both are already on every
+# phone, on partitions this system never writes:
+#
+#   system  (mmcblk0p14, ext4): /etc/firmware/wcnss.mdt, .b00, .b01, .b02, .b04
+#   persist (mmcblk0p16, ext4): /WCNSS_qcom_wlan_nv.bin, the raw calibration
+#
+# Each is mounted read-only with `noload` (no ext4 journal replay) only long
+# enough to copy the files into the /run tmpfs, then unmounted again.
+#
+# wcn36xx expects the calibration in the layout stock vos_nv_open hands this
+# firmware: the first 27084 raw bytes, the firmware configuration defaults
+# (26 x 0xff, 6 x 0x00) in place of raw bytes 27084..27115, then raw bytes
+# 27116..28455. The 1320 bytes after that are not part of the payload. The
+# raw file starts with a validity bitmap; the bits of the 13 tables this
+# firmware reads must all be set.
+#
+# firmware_class.path is searched before /lib/firmware, so the shipped
+# regulatory database stays available. The application loads the Wi-Fi
+# drivers afterwards (qrtr, wcnss_ctrl, wcn36xx, qcom_wcnss_pil).
+#
+# Exits 0 whatever happens: a phone without usable firmware still boots, and
+# a non-zero exit here would stop the BEAM from starting.
+
+set -u
+
+FWDIR=/run/firmware
+PARAM=/sys/module/firmware_class/parameters/path
+WORK=/run/expressatt
+FWCONFIG=/usr/lib/expressatt/nv-fwconfig.bin
+
+SYSTEM_DEV=/dev/mmcblk0p14
+SYSTEM_SECTORS=2457600
+PERSIST_DEV=/dev/mmcblk0p16
+PERSIST_SECTORS=16384
+
+RAW_NV_SIZE=29776
+NV_SIZE=28456
+# Bits 0..5, 11..16 and 18 of the validity bitmap.
+NV_REQUIRED_BITS=391231
+
+log() {
+	echo "expressatt-bringup: $*"
+	[ -w /dev/kmsg ] && echo "expressatt-bringup: $*" > /dev/kmsg 2>/dev/null
+	return 0
+}
+
+file_size() {
+	# The target busybox has neither stat nor wc; the fifth ls -l field is the size.
+	# shellcheck disable=SC2012,SC2046
+	set -- $(ls -ln "$1" 2>/dev/null)
+	echo "${5:-0}"
+}
+
+# mount_stock DEVICE SECTORS MOUNTPOINT
+mount_stock() {
+	if [ "$(cat "/sys/class/block/${1#/dev/}/size" 2>/dev/null)" != "$2" ]; then
+		log "$1 is not the expected stock partition; skipping"
+		return 1
+	fi
+	mkdir -p "$3"
+	if ! mount -t ext4 -o ro,noload,nodev,noexec,nosuid "$1" "$3" 2>/dev/null; then
+		log "could not mount $1 read-only"
+		rmdir "$3" 2>/dev/null
+		return 1
+	fi
+}
+
+unmount_stock() {
+	umount "$1" 2>/dev/null
+	rmdir "$1" 2>/dev/null
+}
+
+mkdir -p "$FWDIR/wlan/prima" "$WORK"
+
+# --- WCNSS (RIVA) image from system -------------------------------------------
+if mount_stock "$SYSTEM_DEV" "$SYSTEM_SECTORS" "$WORK/system"; then
+	src=$WORK/system/etc/firmware
+	if [ -f "$src/wcnss.mdt" ]; then
+		segments=0
+		for f in "$src"/wcnss.mdt "$src"/wcnss.b[0-9][0-9]; do
+			[ -f "$f" ] || continue
+			cp "$f" "$FWDIR/${f##*/}"
+			segments=$((segments + 1))
+		done
+		log "WCNSS image: $segments files from system /etc/firmware, mdt $(sha256sum "$FWDIR/wcnss.mdt" | cut -c1-16)"
+	else
+		log "no wcnss.mdt on system; Wi-Fi stays off"
+	fi
+	unmount_stock "$WORK/system"
+fi
+
+# --- NV calibration from persist -------------------------------------------------
+if mount_stock "$PERSIST_DEV" "$PERSIST_SECTORS" "$WORK/persist"; then
+	raw=$WORK/persist/WCNSS_qcom_wlan_nv.bin
+	nv=$FWDIR/wlan/prima/WCNSS_qcom_wlan_nv.bin
+	if [ ! -f "$raw" ]; then
+		log "no WCNSS_qcom_wlan_nv.bin on persist; wcn36xx will fail to start"
+	elif [ "$(file_size "$raw")" != "$RAW_NV_SIZE" ]; then
+		log "unexpected raw NV size $(file_size "$raw"); calibration not staged"
+	else
+		bitmap=$(hexdump -n 4 -e '1/4 "%u"' "$raw")
+		if [ $((bitmap & NV_REQUIRED_BITS)) -ne "$NV_REQUIRED_BITS" ]; then
+			log "raw NV validity bitmap $bitmap lacks required tables; calibration not staged"
+		else
+			{
+				dd if="$raw" bs=27084 count=1
+				cat "$FWCONFIG"
+				dd if="$raw" bs=4 skip=6779 count=335
+			} > "$nv" 2>/dev/null
+			if [ "$(file_size "$nv")" = "$NV_SIZE" ]; then
+				log "WCNSS NV: projected from persist"
+			else
+				log "NV projection produced $(file_size "$nv") bytes; calibration not staged"
+				rm -f "$nv"
+			fi
+		fi
+	fi
+	unmount_stock "$WORK/persist"
+fi
+
+if [ -w "$PARAM" ]; then
+	echo "$FWDIR" > "$PARAM"
+	log "firmware_class.path set to $FWDIR"
+else
+	log "cannot write $PARAM"
+fi
+
+exit 0
